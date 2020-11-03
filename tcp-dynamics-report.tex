@@ -1,6 +1,8 @@
 \documentclass[12pt]{article}
 \rmfamily
 \usepackage[margin=1.0in]{geometry}
+\usepackage{graphicx}
+\graphicspath{ {figures/} }
 
 \title{TCP Dynamics Report}
 \date{November 2020}
@@ -9,5 +11,105 @@
 \begin{document}
 \maketitle
 
+\section{Analysing the strategy of the client and server to maintain throughput on ports 4030 through 4039}
+\subsection*{Investigation}
+The data for this part was collected during the between 8PM and 11PM on the evening of Sunday 1st November.
+
+\subsubsection*{Low loss, small file (Port 4032, 256KB)}
+To begin investigating the strategy of the client and server, I analysed how a 256KB file was downloaded from port 4032 (10\% packet loss).
+From this I identified that the window size was 2, with the client sending a cumulative acknowledgement after each window.
+I also identified that each TCP packet payload was 1452 bytes, and the sequence number of a packet is the cumulative number of bytes including that packet.
+Finally, I noticed that the cumulative acknowledgements asked for the sequence number of the next packet which is required to be sent, not the sequence number of the most up-to-date packet.
+
+Initial analysis of the throughput reveals "plateaus" where no data is being transfered, see \ref{figure1: 4032:256KB Throughput}.
+
+\begin{figure}[!htbp]
+  \centering
+  \includegraphics[scale=0.3]{4032_256KB_throughput-marked-points.jpg}
+  \caption{"256KB file, port 4032 (10\%) packet loss throughput."}
+  \label{figure1: 4032:256KB Throughput}
+\end{figure}
+
+Upon reviewing the packet capture, we can see that the throughput has a slight reduction when the first duplicate ACK is sent (packet 21734 in \ref{figure2: first duplicate ACK} is point A in \ref{figure1: 4032:256KB Throughput}).
+Following the first duplicate ACK, it appears the server continues to send packets for 20 milliseconds before resending the missing packet.
+This is because the packets are already en-route and the server has not received the duplicate ACK yet. 
+From this we can assume that the server is not waiting for an ACK before sending the next packets.
+
+\begin{figure}[!htbp]
+  \centering
+  \includegraphics[width=\linewidth]{4032-256KB-duplicate-ack.PNG}
+  \caption{"First duplicate ACK."}
+  \label{figure2: first duplicate ACK}
+\end{figure}
+
+Once it has resent the missing packet, the server continues where it left off and continues sending packets it has not already sent.
+This is seen in figure \ref{figure3: First retransmission}, where the server transmits 169885, then retransmits 108901.
+Retransmission of 108901 is point C in figure \ref{figure1: 4032:256KB Throughput}
+This first packet the server sends after the retransmission is 171337, which is the next in the sequence (169885 + 1452 = 171337).
+This shows that the server assumes the client is storing the out-of-order packets rather than discarding them (like a pipeline receiver).
+
+\begin{figure}[!htbp]
+  \centering
+  \includegraphics[width=\linewidth]{4032-256KB-retransmission.PNG}
+  \caption{"First retransmission."}
+  \label{figure3: First retransmission}
+\end{figure}
+
+In this case, it appears a second packet had actually gone missing (114709), and so the client sends another duplicate ACK.
+On the server, this appears to trigger a Rapid Recovery/Fast Retransmission as the server starts retransmitting every packet after 114709 (see figure \ref{figure4: Fast retransmission}).
+
+\begin{figure}[!htbp]
+  \centering
+  \includegraphics[width=\linewidth]{4032-256KB-fast-retransmission.PNG}
+  \caption{"Fast retransmission."}
+  \label{figure4: Fast retransmission}
+\end{figure}
+
+As a cumulative acknowledgement is being used, the server only knows that every packet up to 114709 has been received, it does not know the status of every packet it has sent since.
+Due to this, the server assumes none of the packets after 114709 have been received, and starts to resend all of them.
+In this case, only four packets went missing (108901, 114709, 116161, 117613), and so every packet after this has already been received and buffered (causing a spurious retransmission).
+Eventually, the server receives one of the client's duplicate ACKs stating that all of these packets have already been received, and the server starts sending packets as normal (figure \ref{figure5: Return to normal}, and point D on \ref{figure1: 4032:256KB Throughput}).
+
+\begin{figure}[!htbp]
+  \centering
+  \includegraphics[width=\linewidth]{4032-256KB-back-to-normal.PNG}
+  \caption{"Return to normal."}
+  \label{figure5: Return to normal}
+\end{figure}
+
+\subsubsection*(Low loss, medium file (Port 4032, 16M))
+With a larger file, we begin to see how both the client and server deal with packet loss over a longer period of time.
+By reviewing the throughput (figure \ref{figure6: 4032:16M Throughput}), we can see significant peaks and troughs and large periods with no throughput as time passes.
+
+\begin{figure}[!htbp]
+  \centering
+  \includegraphics[width=\linewidth]{4032-16M-throughput.jpeg}
+  \caption{"256KB file, port 4032 (10\%) packet loss throughput."}
+  \label{figure6: 4032:16M Throughput}
+\end{figure}
+
+By looking at the packet capture, we can see that the same behaviour of acknowledgements and retransmissions occurs for the larger file as it did for the smaller file.
+
+
+\subsection*{Client/Server Strategy}
+\subsubsection*{Client}
+Following the investigation, I believe this is the Client's strategy to attempt to maintain throughput:
+\begin{itemize}
+  \item Send a cumulative ACK after receiving every two packets
+  \item If an out-of-order packet is received, an ACK is sent stating what the next expected packet is
+  \item If another out-of-order packet is received, a duplicate ACK is sent. This repeats until the missing packet is received
+  \item If a duplicate packet is received, then a duplicate ACK is sent
+  \item When the last packet arrives, send a FIN, ACK to close the connection
+\end{itemize}
+
+\subsubsection*{Server}
+The server knows less about which packets have been received correctly than the client, so it has a slightly more complicated strategy.
+\begin{itemize}
+  \item Send packets in order and assume they arrive correctly unless you hear otherwise
+  \item If you receive a single duplicate ACK, just resend that packet. Assume all packets sent since that packet have arrived correctly and pick up where you left off after it is resent
+  \item If you receive a duplicate ACK for a packet sent after the original lost packet, assume all packets from that sequence number on have been lost and resend them actually
+  \item If you receive a duplicate ACK from the client stating that more packets have been sent than previously thought, stop resending packets before that sequence number and start resending subsequent packets
+  \item If you receive a FIN, ACK from the client, as all packets have been received correctly (or the client wants to stop the connection for another reason)
+\end{itemize}
 
 \end{document}
