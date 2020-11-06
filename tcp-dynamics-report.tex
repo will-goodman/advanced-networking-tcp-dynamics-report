@@ -11,6 +11,8 @@
 \begin{document}
 \maketitle
 
+All data for this report was gathered using a Python script with the "requests" library and a 60 second timeout.
+
 \section{Analysing the strategy of the client and server to maintain throughput on ports 4030 through 4039}
 \subsection*{Investigation}
 The data for this part was collected during the between 8PM and 11PM on the evening of Sunday 1st November.
@@ -82,32 +84,32 @@ This shows that the server knows the client is buffering all out-of-order packet
 In this case something interesting happens.
 It appears a second packet had actually gone missing (114709), and so the client sends another duplicate ACK.
 As the client receives more out-of-order packets, four more duplicate ACKs are sent.
-On the server, this appears to trigger a Rapid Recovery/Fast Retransmission as the server starts retransmitting every packet after 114709 (see figure \ref{figure4: Fast retransmission}).
+On the server, this appears to trigger a Rapid Recovery/Fast Retransmission as the server starts retransmitting every packet after 114709 (see figure \ref{figure5: Fast retransmission}).
 
 \begin{figure}[!htbp]
   \centering
   \includegraphics[width=\linewidth]{4032-256KB-fast-retransmission.PNG}
   \caption{"Fast retransmission."}
-  \label{figure4: Fast retransmission}
+  \label{figure5: Fast retransmission}
 \end{figure}
 
 As a cumulative acknowledgement is being used, the server only knows that every packet up to 114709 has been received, it does not know the status of every packet it has sent since.
 As three duplicate ACKs have been received for the same missing packet, a Fast Retransmission is triggered and every packet since the missing packet is retransmitted.
 In this case, only four packets went missing (108901, 114709, 116161, 117613), and so every packet after this has already been received and buffered (causing a spurious retransmission).
-Eventually, the server receives one of the client's duplicate ACKs stating that all of these packets have already been received, and the server starts sending packets as normal (figure \ref{figure5: Return to normal}, and point D on \ref{figure1: 4032:256KB Throughput}).
+Eventually, the server receives one of the client's duplicate ACKs stating that all of these packets have already been received, and the server starts sending packets as normal (figure \ref{figure6: Return to normal}, and point D on \ref{figure1: 4032:256KB Throughput}).
 
 \begin{figure}[!htbp]
   \centering
   \includegraphics[width=\linewidth]{4032-256KB-back-to-normal.PNG}
   \caption{"Return to normal."}
-  \label{figure5: Return to normal}
+  \label{figure6: Return to normal}
 \end{figure}
 
 The question arises, why did the first missing packet not cause a Fast Retransmission but the second did?
 This may be because some or all of the duplicate acknowledgements for the first missing packet never arrived at the server, or did not arrive before the timeout.
 The same reason may be why five duplicate acknowledgements were sent before the Fast Retransmission of the second missing packet was triggered, as opposed to the three duplicate ACKs required by the specification. 
 
-Further evidence of this appears lower within the same TCP stream (figure \ref{figure6: Missing ACKs}), a collection of packets are retransmitted despite acknowledgements being sent by the client.
+Further evidence of this appears lower within the same TCP stream (figure \ref{figure7: Missing ACKs}), a collection of packets are retransmitted despite acknowledgements being sent by the client.
 The packets must be timing out as the ACKs are not arriving at the server, causing them to be retransmitted even though they have already been acknowledged by the client (spurious retransmission).
 The duplicate ACKs for packet 232321 must arrive however, as the Fast Retransmission is triggered for that packet.
 
@@ -115,7 +117,7 @@ The duplicate ACKs for packet 232321 must arrive however, as the Fast Retransmis
   \centering
   \includegraphics[width=\linewidth]{4032-256KB-lost-acks.PNG}
   \caption{"ACKs going missing."}
-  \label{figure6: Missing ACKs}
+  \label{figure7: Missing ACKs}
 \end{figure}
 
 Another feature which is worth noting, is the server does not appear to be using Slow Start.
@@ -125,27 +127,18 @@ If Slow Start was in use, we would expect to see this increase exponentially unt
 
 \subsubsection*{Low loss, medium file (Port 4032, 16MB)}
 With a larger file, we begin to see how both the client and server deal with packet loss over a longer period of time.
-% By reviewing the Stevens Time Sequence, we can clearly see that Slow Start is being used. 
-% This is not surprising as it is compulsory under the TCP specification.
-
-% \begin{figure}[!htbp]
-%   \centering
-%   \includegraphics[width=\linewidth]{4032-16M-stevens.jpeg}
-%   \caption{"16MB file, port 4032 (10\%) packet loss stevens."}
-%   \label{figure6: 4032:16M Stevens}
-% \end{figure}
 
 By looking at the packet capture, we can see that the same behaviour of acknowledgements and retransmissions occurs for the larger file as it did for the smaller file.
 The Window size advertised by the client is large (64240 Bytes) and the buffer never fills up, and as such we never see if Silly Window Syndrome occurs.
 This does show however, that Silly Window Syndrome is not as much of an issue today with faster processing power and larger memory.
 
-This 16Mb file never actually finished downloading, the client ended the connection before it completed (figure \ref{figure7: 4032:16M RST}).
+This 16Mb file never actually finished downloading, the client ended the connection before it completed (figure \ref{figure8: 4032:16M RST}).
 
 \begin{figure}[!htbp]
   \centering
   \includegraphics[width=\linewidth]{4032-16M-RST.PNG}
   \caption{"Client RST."}
-  \label{figure7: 4032:16M RST}
+  \label{figure8: 4032:16M RST}
 \end{figure}
 
 Upon further inspection we can see the last contact from the server (234852) is at 384.979104 seconds.
@@ -181,5 +174,130 @@ The server knows less about which packets have been received correctly than the 
 \end{itemize}
 
 \section{Analysing Drop In Performance As Packets Are Lost}
+The data for this part was collected during the between 8PM and 11PM on the evening of Sunday 1st November.
+
+To begin, let's look at how long it takes to download the same file on different ports.
+Figure \ref{figure9: 4030-4039:16KB download time}, shows the median time (out of five attempts) to download a 16KB file on ports 4030 to 4039. 
+
+\begin{figure}[!htbp]
+  \centering
+  \includegraphics[width=\linewidth]{4030-4039-16KB-download-time.png}
+  \caption{"4030-4039:16KB download time."}
+  \label{figure9: 4030-4039:16KB download time}
+\end{figure}
+
+In the lower ports, up until port 4036, there is very little change in download time.
+From port 4036 onwards, we start to see an exponential increase in download time start to appear.
+If we look at 64KB, we see a similar picture and some of the more lossy ports (4037 onwards) start to timeout (figure).
+The only difference here is that the curve starts to become exponential earlier, at 15\% packet loss rather than 30\%.
+
+\begin{figure}[!htbp]
+  \centering
+  \includegraphics[width=\linewidth]{4030-4039-64KB-download.png}
+  \caption{"4030-4039:64KB download time."}
+  \label{figure10: 4030-4039:64KB download time}
+\end{figure}
+
+The same pattern is seen with a 2MB file (figure \ref{figure11: 4030-4039:2MB download time}).
+Download time appears to increase exponentially as packet loss increases.
+In addition, packet loss appears to affect the performance of downloading larger files much more than smaller files.
+
+\begin{figure}[!htbp]
+  \centering
+  \includegraphics[width=\linewidth]{4030-4039-2MB-download-time.png}
+  \caption{"4030-4039:2MB download time."}
+  \label{figure11: 4030-4039:2MB download time}
+\end{figure}
+
+Why is this?
+If we look at figure \ref{figure12: 4035:256KB tcptrace}, we can see increasingly long periods where no packets are received from the server.
+At a first glance, these periods appear to double in length each time, an exponential backoff.
+
+\begin{figure}[!htbp]
+  \centering
+  \includegraphics[width=\linewidth]{4035-256KB-tcptrace.jpg}
+  \caption{"4035:256KB (25\% loss) tcptrace."}
+  \label{figure12: 4035:256KB tcptrace}
+\end{figure}
+
+By looking at the timings of the packets within the TCP stream, we can see this to be true:
+\begin{enumerate}
+  \item 1987.344151 - 1983.34451 = 3.99964 seconds
+  \item 1994.448845 - 1987.076671 = 7.37217 seconds
+  \item 2009.034187 - 1994.478403 = 14.55578 seconds
+  \item 2039.757708 - 2009.098606 = 30.6591 seconds
+  \item 2099.158037 - 2040.852611 = 58.30542 seconds
+\end{enumerate}
+
+The pauses are not exactly double each other, however this would be expected as packets may take slightly less or more time to reach the client.
+The values are close enough for us to assume our hypothesis is correct, and there is an exponential backoff on the server.
+This is why the client ends the connection before pause six ends, as pause six would be 120 seconds, and the client has a 60 second timeout.
+This backoff is the reason we see an exponential trend as packet loss increases.
+The curve increases more aggressively for larger files as there are more packets to go missing.
+
+This exponential backoff is known as Karn's Algorithm.
+Each time the timer expires and triggers a retransmission, the server increases the timeout by multiplying the current timeout by a value.
+According to the algorithm, the value does not need to be two, however it typically is and in this case clearly is.
+Generally, the intial timeout is an estimate of the round-trip time plus some safety margin, and in this case is likely 3 and a half seconds.
+
+\section{Analysing performance with and without Selective Acknowledgement and Window Scaling}
+The data for this part was collected on 5th November.
+
+To compare performance between the different configurations, we need to see how they perform downloading the same file with different amounts of lost packets.
+I downloaded a 16KB file from each port (4000-4039) five times, and plotted the median on figure \ref{figure13: 4000-4039:16KB Average Download Time}.
+By using the median rather than the mean, I removed the anomalous results.
+
+By looking at the graph, we can see that there is very little difference between the configurations with low amounts of loss.
+Once the percentage of lost packets breaks 30\% (ports 40X6), the different configurations start to become separated.
+Having both Selective Acknowledgement and Window Scaling enabled results in the best performance, with a very minimal increase in download time as packet loss increases.
+Window Scaling and Selective Acknowledgement enabled independently provide very similar results, however Window Scaling does appear to provide slightly better performance.
+Both Window Scaling and Selective Acknowledgement disabled provides by far the worst performance, however the result for port 4039 is so much worse than 4009, 4019, and 4029, that I would not be surprised if there were other network issues at play.
+
+\begin{figure}[!htbp]
+  \centering
+  \includegraphics[width=\linewidth]{4000-4039-16KB-download-time.png}
+  \caption{"4000-4039:16KB Average Download Time."}
+  \label{figure13: 4000-4039:16KB Average Download Time}
+\end{figure}
+
+However, 16KB is not a very large file, and as such there is not that many packets which are able to be lost.
+If we perform the same experiment on a larger file, 2MB, we may be able to confirm our assumptions.
+
+\begin{figure}[!htbp]
+  \centering
+  \includegraphics[width=\linewidth]{4000-4039-2MB-download-time.png}
+  \caption{"4000-4039:2MB Average Download Time."}
+  \label{figure14: 4000-4039:2MB Average Download Time}
+\end{figure}
+
+In figure \ref{figure14: 4000-4039:2MB Average Download Time}, we see that the results for Selective Acknowledgement and Window Scaling either all enabled or all disabled are vaguely the same as before.
+However, the results for just having Selective Acknowledgement enabled seem to outperform results for just Window Scaling.
+Since ports 4010 and 4020 are very similar, and when downloading a small file Window Scaling and Selective Acknowledgement perform very similarly, could Selective Acknowledgement just be dealing better with packet loss?
+
+If we look at an even larger file of 16MB (figure \ref{figure15: 4000-4039:16MB Average Download Time}), it becomes clear.
+
+\begin{figure}[!htbp]
+  \centering
+  \includegraphics[width=\linewidth]{4000-4039-16MB-download-time.png}
+  \caption{"4000-4039:16MB Average Download Time."}
+  \label{figure15: 4000-4039:16MB Average Download Time}
+\end{figure}
+
+With just Window Scaling enabled, the download timed out with only 10\% packet loss.
+With just Selective Acknowledgement enabled, the download did not time out until 35\% packet loss, and the performance is much improved over Window Scaling.
+
+\begin{figure}[!htbp]
+  \centering
+  \includegraphics[width=\linewidth]{64MB-no-loss-download-time.png}
+  \caption{"64MB Average Download Time."}
+  \label{figure16: 64MB Average Download Time}
+\end{figure}
+
+Selective Acknowledgement does not outperform Window Scaling in all scenarios, however.
+In the case of 0\% packet loss, such as in figure \ref{figure16: 64MB Average Download Time}, Window Scaling significantly outperforms Selective Acknowledgement.
+This makes sense, as Window Scaling allows more data to be sent quicker, and if no (or very few) packets are lost then the data will be delivered quicker.
+It also makes sense that Selective Acknowledgement will give better performance when there is packet loss, as it will allow the client and server to recover quicker.
+With SA, the server knows exactly which packets have arrived, and will only resend those which have definitely not arrived.
+Without SA, the server will have to resend many packets which have potentially already been delivered successfully, taking up space within the Window which could have been used for new packets, and prolonging the time taken to deliver all packets. 
 
 \end{document}
