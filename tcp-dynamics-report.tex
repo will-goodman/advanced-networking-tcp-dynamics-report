@@ -16,15 +16,17 @@ All data for this report was gathered using a Python script with the "requests" 
 \section{Analysing the strategy of the client and server to maintain throughput on ports 4030 through 4039}
 \subsection*{Investigation}
 The data for this part was collected during the between 8PM and 11PM on the evening of Sunday 1st November.
+My strategy was to use Wireshark to capture downloads of different size files on the same port.
+I then investigated what happened when the throughput was zero and how the client and server worked together to get the throughput flowing again.
 
-\subsubsection*{Low loss, small file (Port 4032, 256KB)}
+\subsubsection*{Low loss, small file (Port 4032, 256KB):}
 To begin investigating the strategy of the client and server, I analysed how a 256KB file was downloaded from port 4032 (10\% packet loss).
 Initial inspection revealed the following:
 \begin{itemize}
   \item The client's buffer is 64240 bytes
   \item Each TCP packet payload received from the server is 1452 bytes
   \item The sequence number of the packet is the cumulative number of payload bytes, including the current packet
-  \item The cumulative acknowledgements from the client to the server refer to the next expected packet, not the most up-to-date received packet
+  \item The cumulative acknowledgements from the client to the server refer to the next expected packet (as per TCP specification)
   \item The client sends an ACK after every two packets have been received
 \end{itemize}
 
@@ -37,10 +39,8 @@ By reviewing a graph of the throughput, we can see "plateaus" where no data is b
   \label{figure1: 4032:256KB Throughput}
 \end{figure}
 
-Upon reviewing the packet capture, we can see that the throughput has a slight reduction when the first duplicate ACK is sent (packet 21734 in figure \ref{figure2: first duplicate ACK} is point A in figure \ref{figure1: 4032:256KB Throughput}).
-Following the first duplicate ACK, it appears the server continues to send packets for 25 milliseconds before resending the missing packet.
-The server keeps sending new packets, despite the client returning duplicate ACKs stating a packet has not arrived.
-The server must be pipelining packets.
+Upon reviewing the packet capture, we can see that the throughput has a slight reduction when the first duplicate ACK is sent (packet 217034 in figure \ref{figure2: first duplicate ACK} is point A in figure \ref{figure1: 4032:256KB Throughput}).
+Following the first duplicate ACK, it appears the server continues to send packets for 25 milliseconds before resending the missing packet, despite the client returning duplicate ACKs stating a packet has not arrived.
 
 \begin{figure}[!htbp]
   \centering
@@ -49,10 +49,31 @@ The server must be pipelining packets.
   \label{figure2: first duplicate ACK}
 \end{figure}
 
-By looking at figure \ref{figure3: BIF and Window Size}, we can see that the number of bytes-in-flight never exceeds the Window Size, and as such the buffer in the client does not overflow.
+In total, thirty-nine duplicate ACKs are sent before the packet is retransmitted by the server.
+Normally, we would expect a Fast Retransmission to be triggered after three duplicate ACKs are received.
+Instead, a regular Retransmission occurs, which is usually triggered by a timeout rather than a duplicate ACK.
+Either the duplicate ACKs are not arriving at the server, or it does not use Fast Retransmission in the standard way.
+Fast Retransmission does occur as expected later in the TCP stream (described in more detail later in the report), so it must be the former.
+
+\begin{figure}[!htbp]
+  \centering
+  \includegraphics[width=\linewidth]{4032-256KB-retransmission.PNG}
+  \caption{"First retransmission."}
+  \label{figure4: First retransmission}
+\end{figure}
+
+As we know this Retransmission is triggered by the server timing out waiting for an ACK, we can estimate the length of the timeout.
+We look at the time taken between the client sending the oldest ACK for the first time, and when the retransmission is received to make this estimate.
+In figure \ref{figure2: first duplicate ACK} line 217032 (ACK) is at 0.756461 seconds and in figure \ref{figure4: First retransmission} line 217113 (retransmission) is at 1.015436 seconds.
+This is a time difference of 0.258975.
+Later in the TCP trace another packet goes missing, and the time difference is 0.250174.
+From these two values we can estimate that the timeout for the oldest unacked packet on the server is a quarter of a second.
+
+Another interesting feature we can see here is TCP flow control.
+The 25 milliseconds of packets the server sends after the first duplicate ACK do not overflow the client's buffer.
+By looking at figure \ref{figure3: BIF and Window Size}, we can see that the number of bytes-in-flight never exceeds the Window Size.
 The peak of the BIF (where the buffer would overflow), is the point where the server retransmits the missing packet.
-From this we can assume that the server limits the number of unacknowledged packets which have been sent to not exceed the client's buffer space.
-This is TCP flow control in action.
+From this we can assume that the server limits the number of unacknowledged packets which have been sent to not exceed the client's buffer space (TCP Flow Control).
 
 \begin{figure}[!htbp]
   \centering
@@ -61,25 +82,11 @@ This is TCP flow control in action.
   \label{figure3: BIF and Window Size}
 \end{figure}
 
-As the server simply retransmits the missing packet, rather than performing a fast retransmission, we can assume that the retransmission was caused by the acknowledgement timeout.
-By looking at the time taken between the client sending the oldest ACK for the first time, and when the retransmission is received, we can estimate the timeout for unacked packets on the server.
-In figure \ref{figure2: first duplicate ACK} line 217032 (ACK) is at 0.756461 seconds and in figure \ref{figure4: First retransmission} line 217113 (retransmission) is at 1.015436 seconds.
-This is a time difference of 0.258975.
-Later in the TCP trace another packet goes missing, and the time difference is 0.250174.
-From these two values we can estimate that the timeout for the oldest unacked packet on the server is a quarter of a second, at which point the server retransmits that packet.
-
 Once it has resent the missing packet, the server continues where it left off and continues sending packets it has not already sent.
-This is seen in figure \ref{figure4: First retransmission}, where the server transmits 169885, then retransmits 108901.
+This is seen in figure \ref{figure4: First retransmission}, where the server transmits sequence 169885, then retransmits sequence 108901.
 Retransmission of 108901 is point C in figure \ref{figure1: 4032:256KB Throughput}
-This first packet the server sends after the retransmission is 171337, which is the next in the sequence (169885 + 1452 = 171337).
-This shows that the server knows the client is buffering all out-of-order packets, and is not discarding them like a pipelined receiver.
-
-\begin{figure}[!htbp]
-  \centering
-  \includegraphics[width=\linewidth]{4032-256KB-retransmission.PNG}
-  \caption{"First retransmission."}
-  \label{figure4: First retransmission}
-\end{figure}
+The first packet the server sends after the retransmission is 171337, which is the next in the sequence (169885 + 1452 bytes = 171337).
+This shows that the server is aware the client is buffering all out-of-order packets, and is not discarding them like a pipelined receiver.
 
 In this case something interesting happens.
 It appears a second packet had actually gone missing (114709), and so the client sends another duplicate ACK.
@@ -93,10 +100,11 @@ On the server, this appears to trigger a Rapid Recovery/Fast Retransmission as t
   \label{figure5: Fast retransmission}
 \end{figure}
 
-As a cumulative acknowledgement is being used, the server only knows that every packet up to 114709 has been received, it does not know the status of every packet it has sent since.
+As a cumulative acknowledgement is being used, the server only knows that every packet up to sequence 114709 has been received, it does not know the status of every packet it has sent since.
 As three duplicate ACKs have been received for the same missing packet, a Fast Retransmission is triggered and every packet since the missing packet is retransmitted.
-In this case, only four packets went missing (108901, 114709, 116161, 117613), and so every packet after this has already been received and buffered (causing a spurious retransmission).
-Eventually, the server receives one of the client's duplicate ACKs stating that all of these packets have already been received, and the server starts sending packets as normal (figure \ref{figure6: Return to normal}, and point D on \ref{figure1: 4032:256KB Throughput}).
+In this case, only four packets went missing (sequence 108901, 114709, 116161, 117613), and so every packet after this has already been received and buffered (causing a spurious retransmission).
+When the spurious transmissions start occuring, the client responds with duplicate ACKs stating that all these packets are being retransmitted unnecessarily.
+Eventually, the server receives one of these duplicate ACKs, and starts sending packets as normal (figure \ref{figure6: Return to normal}, and point D on \ref{figure1: 4032:256KB Throughput}).
 
 \begin{figure}[!htbp]
   \centering
@@ -106,12 +114,12 @@ Eventually, the server receives one of the client's duplicate ACKs stating that 
 \end{figure}
 
 The question arises, why did the first missing packet not cause a Fast Retransmission but the second did?
-This may be because some or all of the duplicate acknowledgements for the first missing packet never arrived at the server, or did not arrive before the timeout.
-The same reason may be why five duplicate acknowledgements were sent before the Fast Retransmission of the second missing packet was triggered, as opposed to the three duplicate ACKs required by the specification. 
+As mentioned earlier, this is likely because some or all of the duplicate ACKs did not reach the server.
+This may also be the reason five duplicate ACKs were sent before the Fast Retransmission of the second missing packet was triggered, as opposed to the three duplicate ACKs required by the specification. 
 
-Further evidence of this appears lower within the same TCP stream (figure \ref{figure7: Missing ACKs}), a collection of packets are retransmitted despite acknowledgements being sent by the client.
-The packets must be timing out as the ACKs are not arriving at the server, causing them to be retransmitted even though they have already been acknowledged by the client (spurious retransmission).
-The duplicate ACKs for packet 232321 must arrive however, as the Fast Retransmission is triggered for that packet.
+Further evidence of ACKs going missing appears lower within the TCP stream (figure \ref{figure7: Missing ACKs}).
+A collection of packets are retransmitted despite acknowledgements being sent by the client (spurious retransmissions).
+The duplicate ACKs for packet sequence 232321 must arrive however, as the Fast Retransmission is triggered for that packet.
 
 \begin{figure}[!htbp]
   \centering
@@ -121,17 +129,14 @@ The duplicate ACKs for packet 232321 must arrive however, as the Fast Retransmis
 \end{figure}
 
 Another feature which is worth noting, is the server does not appear to be using Slow Start.
-This is unexpected, as Slow Start is compulsory.
+This is unexpected, as Slow Start should be compulsory.
 In figure \ref{figure3: BIF and Window Size} we can see that the number of bytes-in-flight stays stable at 2904, unless a packet has been unacknowledged.
 If Slow Start was in use, we would expect to see this increase exponentially until a packet has been lost.
 
-\subsubsection*{Low loss, medium file (Port 4032, 16MB)}
+\subsubsection*{Low loss, medium file (Port 4032, 16MB):}
 With a larger file, we begin to see how both the client and server deal with packet loss over a longer period of time.
 
 By looking at the packet capture, we can see that the same behaviour of acknowledgements and retransmissions occurs for the larger file as it did for the smaller file.
-The Window size advertised by the client is large (64240 Bytes) and the buffer never fills up, and as such we never see if Silly Window Syndrome occurs.
-This does show however, that Silly Window Syndrome is not as much of an issue today with faster processing power and larger memory.
-
 This 16Mb file never actually finished downloading, the client ended the connection before it completed (figure \ref{figure8: 4032:16M RST}).
 
 \begin{figure}[!htbp]
@@ -143,7 +148,7 @@ This 16Mb file never actually finished downloading, the client ended the connect
 
 Upon further inspection we can see the last contact from the server (234852) is at 384.979104 seconds.
 60 seconds later (235227), the client sends a FIN, ACK packet to close the connection.
-This is triggered by the timeout within the Python script used to collect the data (shown at the start of the report).
+This is triggered by the timeout within the Python script used to collect the data (mentioned at start of report).
 After this FIN, ACK packet, the client receives a regular packet from the server. 
 This packet was likely already in the wire when the FIN, ACK was received by the server.
 Due to this, the client sends a RST, ACK packet to terminate the connection completely.
@@ -161,6 +166,8 @@ Following the investigation, I believe this is the Client's strategy to attempt 
   \item If no packets from the server for 60 seconds, send a FIN, ACK to close the connection
   \item If any packets are received from the server after sending a FIN, ACK (excluding an acknowledgement of the FIN, ACK), send a RST, ACK packet
 \end{itemize}
+
+I was not able to investigate whether Silly Window Syndrome would occur as the client appeared to move packets from the buffer to the application very quickly, and as such found no occurrences where the Window Size was zero.
 
 \subsubsection*{Server}
 The server knows less about which packets have been received correctly than the client, so it has a slightly more complicated strategy.
@@ -187,8 +194,8 @@ Figure \ref{figure9: 4030-4039:16KB download time}, shows the median time (out o
 \end{figure}
 
 In the lower ports, up until port 4036, there is very little change in download time.
-From port 4036 onwards, we start to see an exponential increase in download time start to appear.
-If we look at 64KB, we see a similar picture and some of the more lossy ports (4037 onwards) start to timeout (figure).
+From port 4036 onwards, we start to see an exponential increase in download time.
+If we look at 64KB, we see a similar picture and some of the more lossy ports (4037 onwards) start to timeout (figure \ref{figure10: 4030-4039:64KB download time}).
 The only difference here is that the curve starts to become exponential earlier, at 15\% packet loss rather than 30\%.
 
 \begin{figure}[!htbp]
@@ -229,11 +236,11 @@ By looking at the timings of the packets within the TCP stream, we can see this 
   \item 2099.158037 - 2040.852611 = 58.30542 seconds
 \end{enumerate}
 
-The pauses are not exactly double each other, however this would be expected as packets may take slightly less or more time to reach the client.
+The pauses are not exactly double each other, however this would be expected as packets may take slightly less or more time to reach the client from the server.
 The values are close enough for us to assume our hypothesis is correct, and there is an exponential backoff on the server.
 This is why the client ends the connection before pause six ends, as pause six would be 120 seconds, and the client has a 60 second timeout.
 This backoff is the reason we see an exponential trend as packet loss increases.
-The curve increases more aggressively for larger files as there are more packets to go missing.
+The curve increases more aggressively for larger files as there are more packets which can go missing.
 
 This exponential backoff is known as Karn's Algorithm.
 Each time the timer expires and triggers a retransmission, the server increases the timeout by multiplying the current timeout by a value.
@@ -243,7 +250,7 @@ Generally, the intial timeout is an estimate of the round-trip time plus some sa
 \section{Analysing performance with and without Selective Acknowledgement and Window Scaling}
 The data for this part was collected on 5th November.
 
-To compare performance between the different configurations, we need to see how they perform downloading the same file with different amounts of lost packets.
+To compare performance between the different configurations, we need to see how they perform downloading the same file with different percentages of packet loss.
 I downloaded a 16KB file from each port (4000-4039) five times, and plotted the median on figure \ref{figure13: 4000-4039:16KB Average Download Time}.
 By using the median rather than the mean, I removed the anomalous results.
 
@@ -286,6 +293,13 @@ If we look at an even larger file of 16MB (figure \ref{figure15: 4000-4039:16MB 
 With just Window Scaling enabled, the download timed out with only 10\% packet loss.
 With just Selective Acknowledgement enabled, the download did not time out until 35\% packet loss, and the performance is much improved over Window Scaling.
 
+Selective Acknowledgement does not outperform Window Scaling in all scenarios, however.
+In the case of 0\% packet loss, such as in figure \ref{figure16: 64MB Average Download Time}, Window Scaling significantly outperforms Selective Acknowledgement.
+This makes sense, as Window Scaling allows more data to be sent quicker, and if no (or very few) packets are lost then the data will be delivered quicker.
+It also makes sense that Selective Acknowledgement will give better performance when there is packet loss, as it will allow the client and server to recover quicker.
+With SA, the server knows exactly which packets have arrived, and will only resend those which have definitely not arrived.
+Without SA, the server will have to resend many packets which have potentially already been delivered successfully, taking up space within the Window which could have been used for new packets, and prolonging the time taken to deliver all packets. 
+
 \begin{figure}[!htbp]
   \centering
   \includegraphics[width=\linewidth]{64MB-no-loss-download-time.png}
@@ -293,11 +307,7 @@ With just Selective Acknowledgement enabled, the download did not time out until
   \label{figure16: 64MB Average Download Time}
 \end{figure}
 
-Selective Acknowledgement does not outperform Window Scaling in all scenarios, however.
-In the case of 0\% packet loss, such as in figure \ref{figure16: 64MB Average Download Time}, Window Scaling significantly outperforms Selective Acknowledgement.
-This makes sense, as Window Scaling allows more data to be sent quicker, and if no (or very few) packets are lost then the data will be delivered quicker.
-It also makes sense that Selective Acknowledgement will give better performance when there is packet loss, as it will allow the client and server to recover quicker.
-With SA, the server knows exactly which packets have arrived, and will only resend those which have definitely not arrived.
-Without SA, the server will have to resend many packets which have potentially already been delivered successfully, taking up space within the Window which could have been used for new packets, and prolonging the time taken to deliver all packets. 
+In conclusion, the best results are always achieved with Selective Acknowledgement and Window Scaling enabled, and the worst results occur when both are disabled.
+In reliable networks, Window Scaling will make a larger improvement, and in lossy networks, Selective Acknowledgement is more important.
 
 \end{document}
