@@ -40,7 +40,7 @@ By reviewing a graph of the throughput, we can see "plateaux" where no data is b
 \end{figure}
 
 Upon reviewing the packet capture, we can see that the throughput has a slight reduction when the first duplicate ACK is sent (packet 217034 in figure \ref{figure2: first duplicate ACK} is point A in figure \ref{figure1: 4032:256KB Throughput}).
-Following the first duplicate ACK, it appears the server continues to send packets for 25 milliseconds before resending the missing packet, despite the client returning duplicate ACKs stating a packet has not arrived.
+Following the first duplicate ACK, it appears the server continues to send packets for 250 milliseconds before resending the missing packet, despite the client returning duplicate ACKs stating a packet has not arrived.
 
 \begin{figure}[!htbp]
   \centering
@@ -70,7 +70,7 @@ Later in the TCP trace another packet goes missing, and the time difference is 0
 From these two values we can estimate that the timeout for the oldest unacknowledged packet on the server is a quarter of a second.
 
 Another interesting feature we can see here is TCP flow control.
-The 25 milliseconds of packets the server sends after the first duplicate ACK do not overflow the client's buffer.
+The 250 milliseconds of packets the server sends after the first duplicate ACK do not overflow the client's buffer.
 By looking at figure \ref{figure3: BIF and Window Size}, we can see that the number of bytes-in-flight never exceeds the Window Size.
 The peak of the BIF (where the buffer would overflow), is the point where the server retransmits the missing packet.
 From this we can assume that the server limits the number of unacknowledged packets which have been sent to not exceed the client's buffer space (TCP Flow Control).
