@@ -15,7 +15,7 @@ All data for this report was gathered using a Python script with the "requests" 
 
 \section{Analysing the strategy of the client and server to maintain throughput on ports 4030 through 4039}
 \subsection*{Investigation}
-The data for this part was collected during the between 8PM and 11PM on the evening of Sunday 1st November.
+The data for this part was collected between 8PM and 11PM on the evening of Sunday 1st November.
 My strategy was to use Wireshark to capture downloads of different size files on the same port.
 I then investigated what happened when the throughput was zero and how the client and server worked together to get the throughput flowing again.
 
@@ -30,7 +30,7 @@ Initial inspection revealed the following:
   \item The client sends an ACK after every two packets have been received
 \end{itemize}
 
-By reviewing a graph of the throughput, we can see "plateaus" where no data is being transfered (figure \ref{figure1: 4032:256KB Throughput}).
+By reviewing a graph of the throughput, we can see "plateaux" where no data is being transferred (figure \ref{figure1: 4032:256KB Throughput}).
 
 \begin{figure}[!htbp]
   \centering
@@ -67,7 +67,7 @@ We look at the time taken between the client sending the oldest ACK for the firs
 In figure \ref{figure2: first duplicate ACK} line 217032 (ACK) is at 0.756461 seconds and in figure \ref{figure4: First retransmission} line 217113 (retransmission) is at 1.015436 seconds.
 This is a time difference of 0.258975.
 Later in the TCP trace another packet goes missing, and the time difference is 0.250174.
-From these two values we can estimate that the timeout for the oldest unacked packet on the server is a quarter of a second.
+From these two values we can estimate that the timeout for the oldest unacknowledged packet on the server is a quarter of a second.
 
 Another interesting feature we can see here is TCP flow control.
 The 25 milliseconds of packets the server sends after the first duplicate ACK do not overflow the client's buffer.
@@ -168,6 +168,7 @@ Following the investigation, I believe this is the Client's strategy to attempt 
 \end{itemize}
 
 I was not able to investigate whether Silly Window Syndrome would occur as the client appeared to move packets from the buffer to the application very quickly, and as such found no occurrences where the Window Size was zero.
+In order to try and trigger this I tried downloading large files (32MB, 64MB) with both Python and with wget within the Windows terminal, with no luck.
 
 \subsubsection*{Server}
 The server knows less about which packets have been received correctly than the client, so it has a slightly more complicated strategy.
@@ -176,12 +177,12 @@ The server knows less about which packets have been received correctly than the 
   \item Use a congestion window of 2 packets
   \item If a packet has not been acknowledged after quarter of a second, just resend that packet. Assume all packets sent since that packet have arrived correctly and pick up where you left off after it is resent
   \item If you receive three duplicate ACKs for a packet, assume all packets from that sequence number on have been lost and resend them all (Rapid Recovery)
-  \item If you receive a duplicate ACK from the client stating that more packets have been arrived than previously thought, stop resending packets before that sequence number and start sending subsequent packets
-  \item If you receive a FIN, ACK from the client, as all packets have been received correctly (or the client wants to stop the connection for another reason)
+  \item If you receive a duplicate ACK from the client stating that more packets have arrived than previously thought, stop resending packets before that sequence number and start sending subsequent packets
+  \item If you receive a FIN, ACK from the client, assume all packets have been received correctly (or the client wants to stop the connection for another reason)
 \end{itemize}
 
 \section{Analysing Drop In Performance As Packets Are Lost}
-The data for this part was collected during the between 8PM and 11PM on the evening of Sunday 1st November.
+The data for this part was collected between 8PM and 11PM on the evening of Sunday 1st November.
 
 To begin, let's look at how long it takes to download the same file on different ports.
 Figure \ref{figure9: 4030-4039:16KB download time}, shows the median time (out of five attempts) to download a 16KB file on ports 4030 to 4039. 
@@ -267,7 +268,7 @@ Both Window Scaling and Selective Acknowledgement disabled provides by far the w
   \label{figure13: 4000-4039:16KB Average Download Time}
 \end{figure}
 
-However, 16KB is not a very large file, and as such there is not that many packets which are able to be lost.
+However, 16KB is not a very large file, and as such there are not that many packets which are able to be lost.
 If we perform the same experiment on a larger file, 2MB, we may be able to confirm our assumptions.
 
 \begin{figure}[!htbp]
